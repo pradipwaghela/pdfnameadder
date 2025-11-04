@@ -1,22 +1,19 @@
-import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
-from PIL import Image, ImageTk, ImageDraw, ImageFont
-import fitz  # PyMuPDF
-import csv
-import os
-from pathlib import Path
 import io
-from io import BytesIO
-from reportlab.pdfgen import canvas
-from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.pdfbase import pdfmetrics
+import os
+import unicodedata
+ 
+import csv 
+import fitz  # PyMuPDF
+import tkinter as tk
 
-from weasyprint import HTML
-from PyPDF2 import PdfReader, PdfWriter
 from io import BytesIO
+from pathlib import Path
+from tkinter import ttk, filedialog, messagebox
+
+from PIL import Image, ImageTk, ImageDraw, ImageFont
+
 # Try to import arabic_reshaper and bidi for proper text shaping
 try:
-    from PIL import ImageFont
     import PIL.features
     # Check if Pillow has harfbuzz support
     HAS_HARFBUZZ = PIL.features.check_feature('raqm')
@@ -258,6 +255,40 @@ class InvitationNameAdder:
         self.zoom_label = ttk.Label(zoom_frame, text="100%")
         self.zoom_label.pack(side=tk.LEFT, padx=10)
         ttk.Button(zoom_frame, text="🔍+", command=self.zoom_in, width=5).pack(side=tk.LEFT, padx=2)
+    def make_safe_filename(self,name, repl="_", maxlen=200):
+        """
+        Keep letters (all Unicode letters including Gujarati), marks and numbers.
+        Replace whitespace with `repl`, remove other forbidden filename chars.
+        Normalize to NFC so composed forms are used (better for display/shaping).
+        """
+        # Normalize to composed form (NFC)
+        name = unicodedata.normalize("NFC", name)
+
+        # Replace runs of whitespace with single repl
+        name = " ".join(name.split())  # collapse whitespace
+        name = name.replace(" ", repl)
+
+        # Remove characters that are not letters, marks, numbers, underscore or hyphen
+        safe_chars = []
+        for ch in name:
+            cat = unicodedata.category(ch)
+            # Allow Letters (L*), Marks (M*), Numbers (Nd, etc.), connector punct (Pc), dash (Pd)
+            if cat.startswith("L") or cat.startswith("M") or cat.startswith("N") or cat in ("Pc", "Pd"):
+                safe_chars.append(ch)
+            # optionally allow underscores/hyphens already present
+            elif ch == repl or ch in ("_", "-"):
+                safe_chars.append(ch)
+            # else drop it
+
+        safe = "".join(safe_chars)
+
+        # Trim length and avoid empty filename
+        if not safe:
+            safe = "name"
+        if len(safe) > maxlen:
+            safe = safe[:maxlen].rstrip(repl)
+
+        return safe
     
     def load_font(self):
         path = filedialog.askopenfilename(
@@ -635,7 +666,8 @@ class InvitationNameAdder:
                     self.add_text_to_pdf_page(page, guest_name, x, y, size, text_color)
                 
                 # Save
-                safe_name = "".join(c for c in guest_name if c.isalnum() or c in (' ', '_', '-'))
+                #safe_name = "".join(c for c in guest_name if c.isalnum() or c in (' ', '_', '-'))
+                safe_name = self.make_safe_filename(guest_name, repl="_")
                 output_path = os.path.join(output_dir, f"invitation_{safe_name}.pdf")
                 doc.save(output_path)
                 doc.close()
