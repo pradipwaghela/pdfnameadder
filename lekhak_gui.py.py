@@ -1,19 +1,19 @@
-import io
-import os
 import unicodedata
- 
-import csv 
+import os
+import io
 import fitz  # PyMuPDF
-import tkinter as tk
+import csv
 
-from io import BytesIO
 from pathlib import Path
+import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
-
 from PIL import Image, ImageTk, ImageDraw, ImageFont
+
+
 
 # Try to import arabic_reshaper and bidi for proper text shaping
 try:
+    from PIL import ImageFont
     import PIL.features
     # Check if Pillow has harfbuzz support
     HAS_HARFBUZZ = PIL.features.check_feature('raqm')
@@ -139,10 +139,27 @@ class InvitationNameAdder:
         # Text rendering options
         ttk.Label(font_frame, text="Rendering:").pack(anchor=tk.W, pady=(5,0))
         self.rendering_var = tk.StringVar(value="normal")
-        ttk.Radiobutton(font_frame, text="Normal", variable=self.rendering_var, 
+        ttk.Radiobutton(font_frame, text="Normal (Smaller file)", variable=self.rendering_var, 
                        value="normal").pack(anchor=tk.W)
-        ttk.Radiobutton(font_frame, text="Better Quality (Slower)", variable=self.rendering_var, 
+        ttk.Radiobutton(font_frame, text="Better Quality (Larger file)", variable=self.rendering_var, 
                        value="quality").pack(anchor=tk.W)
+        
+        # Compression options
+        ttk.Label(font_frame, text="Output Quality:").pack(anchor=tk.W, pady=(5,0))
+        self.compression_var = tk.StringVar(value="balanced")
+        
+        ttk.Radiobutton(font_frame, text="📦 Smallest File (JPEG text overlay)", 
+                       variable=self.compression_var, 
+                       value="smallest").pack(anchor=tk.W)
+        ttk.Radiobutton(font_frame, text="⚖️ Balanced (Compressed PNG)", 
+                       variable=self.compression_var, 
+                       value="balanced").pack(anchor=tk.W)
+        ttk.Radiobutton(font_frame, text="⭐ Best Quality (PNG)", 
+                       variable=self.compression_var, 
+                       value="best").pack(anchor=tk.W)
+        
+        ttk.Label(font_frame, text="💡 Recommended: Balanced", 
+                 foreground="blue", font=('', 8)).pack(anchor=tk.W)
         
         # Color settings
         ttk.Label(font_frame, text="Text Color:").pack(anchor=tk.W, pady=(5,0))
@@ -289,7 +306,6 @@ class InvitationNameAdder:
             safe = safe[:maxlen].rstrip(repl)
 
         return safe
-    
     def load_font(self):
         path = filedialog.askopenfilename(
             title="Select Gujarati Font File (.ttf)",
@@ -442,47 +458,75 @@ class InvitationNameAdder:
                 messagebox.showerror("Error", f"Failed to load CSV:\n{str(e)}")
     
     def add_text_to_pdf_page(self, pdf_page, text, x, y, font_size, color_rgb):
-        """Add text to PDF using image overlay method with proper text shaping for Gujarati"""
+        """Add text to PDF using optimized image overlay with smart compression"""
         # Get page dimensions
         page_rect = pdf_page.rect
         page_width = page_rect.width
         page_height = page_rect.height
         
-        # Increase resolution for better quality
-        scale = 3 if self.rendering_var.get() == "quality" else 2
+        # Adjust resolution based on settings
+        if self.rendering_var.get() == "quality":
+            scale = 3
+        else:
+            scale = 2
         
-        # Create transparent image for text with higher resolution
-        img_width = int(page_width * scale)
-        img_height = int(page_height * scale)
-        text_img = Image.new('RGBA', (img_width, img_height), (255, 255, 255, 0))
+        # Calculate text bounding box to create smaller image
+        temp_font = ImageFont.truetype(self.font_path, font_size * scale)
+        
+        # Get text size for creating minimal image
+        temp_img = Image.new('RGBA', (100, 100), (255, 255, 255, 0))
+        temp_draw = ImageDraw.Draw(temp_img)
+        bbox = temp_draw.textbbox((0, 0), text, font=temp_font)
+        text_width = bbox[2] - bbox[0] + 40  # Add padding
+        text_height = bbox[3] - bbox[1] + 40
+        
+        # Create smaller transparent image just for text
+        text_img = Image.new('RGBA', (text_width, text_height), (255, 255, 255, 0))
         draw = ImageDraw.Draw(text_img)
         
         # Load font with scaled size
         try:
             font = ImageFont.truetype(self.font_path, font_size * scale, layout_engine=ImageFont.Layout.RAQM)
         except:
-            # Fallback to basic layout
             font = ImageFont.truetype(self.font_path, font_size * scale)
         
-        # Draw text at scaled position with proper text shaping
+        # Draw text with proper text shaping
         try:
-            # Use proper text layout for complex scripts
-            draw.text((x * scale, y * scale), text, font=font, fill=color_rgb, 
-                     features=['-liga', '-clig'])  # Enable ligatures
+            draw.text((20, 20), text, font=font, fill=color_rgb, 
+                     features=['-liga', '-clig'])
         except:
-            # Fallback to basic drawing
-            draw.text((x * scale, y * scale), text, font=font, fill=color_rgb)
+            draw.text((20, 20), text, font=font, fill=color_rgb)
         
-        # Resize back to original dimensions with high-quality resampling
-        text_img = text_img.resize((int(page_width), int(page_height)), Image.Resampling.LANCZOS)
+        # Resize to actual size
+        final_width = int(text_width / scale)
+        final_height = int(text_height / scale)
+        text_img = text_img.resize((final_width, final_height), Image.Resampling.LANCZOS)
         
-        # Convert PIL image to bytes
+        # Convert to bytes with appropriate format and compression
         img_buffer = io.BytesIO()
-        text_img.save(img_buffer, format='PNG')
+        
+        compression = self.compression_var.get()
+        
+        if compression == "smallest":
+            # Convert RGBA to RGB (remove alpha) and save as JPEG (much smaller!)
+            # Create white background
+            rgb_img = Image.new('RGB', text_img.size, (255, 255, 255))
+            rgb_img.paste(text_img, mask=text_img.split()[3])  # Use alpha as mask
+            rgb_img.save(img_buffer, format='JPEG', quality=85, optimize=True)
+            
+        elif compression == "balanced":
+            # Highly compressed PNG
+            text_img.save(img_buffer, format='PNG', optimize=True, compress_level=9)
+            
+        else:  # best quality
+            # Standard PNG
+            text_img.save(img_buffer, format='PNG', optimize=True, compress_level=6)
+        
         img_buffer.seek(0)
         
-        # Insert image into PDF
-        pdf_page.insert_image(page_rect, stream=img_buffer.getvalue(), overlay=True)
+        # Insert smaller image at specific position
+        text_rect = fitz.Rect(x - 10, y - 10, x + final_width, y + final_height)
+        pdf_page.insert_image(text_rect, stream=img_buffer.getvalue(), overlay=True)
     
     def test_sample(self):
         """Test with a sample name to check font rendering"""
@@ -664,19 +708,29 @@ class InvitationNameAdder:
                     page_num, x, y, size = pos
                     page = doc[page_num]
                     self.add_text_to_pdf_page(page, guest_name, x, y, size, text_color)
-                
-                # Save
-                #safe_name = "".join(c for c in guest_name if c.isalnum() or c in (' ', '_', '-'))
+
                 safe_name = self.make_safe_filename(guest_name, repl="_")
+                # Save with compression
                 output_path = os.path.join(output_dir, f"invitation_{safe_name}.pdf")
-                doc.save(output_path)
+
+                
+                # Save with garbage collection and compression
+                doc.save(output_path, garbage=4, deflate=True, clean=True)
                 doc.close()
-                guest['file_path'] = output_path
-                
-                
+                guest["file_path"] = output_path
+                guest["status"] = 'Success'              
                 progress_var.set(i + 1)
             
             progress.destroy()
+            fieldnames = list(guests[0].keys())
+            if 'file_path' not in fieldnames:
+                fieldnames.append('file_path')
+            if 'status' not in fieldnames:
+                fieldnames.append('status')
+            with open('output.csv', mode='w', newline='', encoding='utf-8') as csvfile:
+                    writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                    writer.writeheader()
+                    writer.writerows(guests)
             
             messagebox.showinfo("Success", 
                 f"✅ Generated {len(guests)} invitations!\n\nSaved to: {output_dir}")
